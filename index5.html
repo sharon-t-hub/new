@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>互動式甘特圖 - 色彩繼承修正版</title>
+    <style>
+        :root {
+            --day-width: 40px;
+            --task-width: 280px;
+            --border-color: #eee;
+            --colors: #4a90e2, #67c23a, #e6a23c, #f56c6c, #7b1fa2, #26a69a;
+        }
+
+        body { font-family: "PingFang TC", "Microsoft JhengHei", sans-serif; margin: 0; padding: 20px; background: #fdfdfd; }
+        .header-area { margin-bottom: 20px; display: flex; align-items: center; gap: 15px; }
+        input[type="date"] { padding: 8px; border: 1px solid #ddd; border-radius: 6px; }
+
+        .gantt-container {
+            display: flex; background: white; border: 1px solid #ddd; border-radius: 12px;
+            overflow: hidden; height: calc(100vh - 120px); box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+        }
+
+        .task-side { width: var(--task-width); flex-shrink: 0; border-right: 1px solid #ccc; background: #fff; z-index: 10; display: flex; flex-direction: column; }
+        .side-header { height: 60px; background: #fcfcfc; border-bottom: 1px solid #ddd; display: flex; align-items: center; padding: 0 20px; font-weight: bold; color: #555; }
+        .task-list { overflow-y: auto; flex-grow: 1; }
+
+        .task-item { height: 50px; border-bottom: 1px solid #f9f9f9; display: flex; align-items: center; padding: 0 15px; position: relative; }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; margin-right: 10px; flex-shrink: 0; }
+        .task-input { width: 100%; border: 1px solid transparent; padding: 5px; font-size: 14px; outline: none; border-radius: 4px; }
+        .task-input:focus { background: #f0f7ff; border-color: #4a90e2; }
+
+        .is-child { padding-left: 40px; }
+        .is-child::before {
+            content: ""; position: absolute; left: 25px; top: 0; bottom: 50%;
+            width: 12px; border-left: 2px solid #ddd; border-bottom: 2px solid #ddd;
+        }
+
+        .timeline-side { overflow: auto; flex-grow: 1; position: relative; }
+        .timeline-header { display: flex; height: 60px; background: #fcfcfc; position: sticky; top: 0; z-index: 5; border-bottom: 1px solid #ddd; }
+        .day-cell { min-width: var(--day-width); text-align: center; border-right: 1px solid #f0f0f0; font-size: 11px; display: flex; flex-direction: column; justify-content: center; }
+        .m-even { background: #fafafa; }
+
+        .gantt-body { position: relative; width: fit-content; min-height: 100%; }
+        .row-grid { height: 50px; border-bottom: 1px solid #f9f9f9; background-image: linear-gradient(90deg, #f5f5f5 1px, transparent 1px); background-size: var(--day-width) 100%; position: relative; }
+
+        .bar { position: absolute; height: 28px; top: 11px; border-radius: 6px; cursor: move; display: flex; align-items: center; padding: 0 10px; font-size: 12px; font-weight: 500; overflow: hidden; white-space: nowrap; }
+        .bar-text { width: 100%; overflow: hidden; text-overflow: ellipsis; pointer-events: none; text-align: center; }
+        .resizer { width: 8px; height: 100%; position: absolute; right: 0; cursor: col-resize; z-index: 2; }
+    </style>
+</head>
+<body>
+
+<div class="header-area">
+    <strong>專案起始：</strong>
+    <input type="date" id="startBtn" value="2026-04-01">
+    <small style="color: #888;">💡 [Enter]: 新增 | [Tab]: 子任務 | [Del]: 刪除任務</small>
+</div>
+
+<div class="gantt-container">
+    <div class="task-side">
+        <div class="side-header">任務清單</div>
+        <div class="task-list" id="taskList"></div>
+    </div>
+    <div class="timeline-side">
+        <div class="timeline-header" id="dateHeader"></div>
+        <div id="ganttRows" class="gantt-body"></div>
+    </div>
+</div>
+
+<script>
+    const colorPalette = ['#4a90e2', '#67c23a', '#e6a23c', '#f56c6c', '#7b1fa2', '#26a69a'];
+    let rowCount = 0;
+
+    // 核心函數：尋找上方最近的母任務顏色
+    function getParentThemeColor(currentElement) {
+        const items = Array.from(document.getElementById('taskList').children);
+        const currentIndex = items.indexOf(currentElement);
+        for (let i = currentIndex; i >= 0; i--) {
+            if (!items[i].classList.contains('is-child')) {
+                return items[i].dataset.color;
+            }
+        }
+        return colorPalette[0];
+    }
+
+    function createRow(afterElement = null, isChild = false) {
+        const id = 'row-' + Date.now() + Math.random();
+        
+        // 如果是子任務，初次建立先拿父色；如果是母任務，拿新顏色
+        let color;
+        if (isChild && afterElement) {
+            color = getParentThemeColor(afterElement);
+        } else {
+            color = colorPalette[rowCount % colorPalette.length];
+            rowCount++;
+        }
+
+        const taskDiv = document.createElement('div');
+        taskDiv.className = `task-item ${isChild ? 'is-child' : ''}`;
+        taskDiv.dataset.id = id;
+        taskDiv.dataset.color = color;
+        taskDiv.innerHTML = `
+            <div class="status-dot" style="background:${color}; display:${isChild ? 'none' : 'block'}"></div>
+            <input type="text" class="task-input" value="新任務" onkeydown="handleKey(event, this)">
+        `;
+
+        const rowDiv = document.createElement('div');
+        rowDiv.className = 'row-grid';
+        rowDiv.dataset.id = id;
+        const barStyle = isChild 
+            ? `background: #fff; border: 2px solid ${color}; color: ${color};` 
+            : `background: ${color}; border: 2px solid ${color}; color: #fff;`;
+
+        rowDiv.innerHTML = `
+            <div class="bar" style="left:40px; width:120px; ${barStyle}">
+                <span class="bar-text">新任務</span>
+                <div class="resizer"></div>
+            </div>
+        `;
+
+        if (afterElement) {
+            afterElement.after(taskDiv);
+            const refIdx = Array.from(document.getElementById('taskList').children).indexOf(afterElement);
+            document.getElementById('ganttRows').children[refIdx].after(rowDiv);
+        } else {
+            document.getElementById('taskList').appendChild(taskDiv);
+            document.getElementById('ganttRows').appendChild(rowDiv);
+        }
+        return taskDiv;
+    }
+
+    function updateRowStyle(item) {
+        const id = item.dataset.id;
+        const rowGrid = document.getElementById('ganttRows').querySelector(`.row-grid[data-id="${id}"]`);
+        const bar = rowGrid.querySelector('.bar');
+        const dot = item.querySelector('.status-dot');
+        const isChild = item.classList.contains('is-child');
+        
+        // 關鍵修正：重新計算顏色歸屬
+        const color = isChild ? getParentThemeColor(item) : item.dataset.color;
+        
+        dot.style.background = color;
+        if (isChild) {
+            dot.style.display = 'none';
+            bar.style.background = '#fff';
+            bar.style.border = `2px solid ${color}`;
+            bar.style.color = color;
+        } else {
+            dot.style.display = 'block';
+            bar.style.background = color;
+            bar.style.border = `2px solid ${color}`;
+            bar.style.color = '#fff';
+        }
+    }
+
+    function handleKey(e, input) {
+        const item = input.parentElement;
+        const id = item.dataset.id;
+        const rowGrid = document.getElementById('ganttRows').querySelector(`.row-grid[data-id="${id}"]`);
+        const barText = rowGrid.querySelector('.bar-text');
+
+        input.oninput = () => barText.innerText = input.value;
+
+        if (e.key === 'Delete') {
+            if (confirm(`確定要刪除「${input.value}」嗎？`)) {
+                item.remove(); rowGrid.remove();
+            }
+            return;
+        }
+
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            createRow(item, item.classList.contains('is-child')).querySelector('input').focus();
+        }
+
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            if (e.shiftKey) {
+                item.classList.remove('is-child');
+            } else {
+                item.classList.add('is-child');
+            }
+            // 切換完畢後，更新整排的樣式（考慮到顏色繼承）
+            updateRowStyle(item);
+        }
+    }
+
+    function renderTime() {
+        const header = document.getElementById('dateHeader');
+        header.innerHTML = '';
+        let start = new Date(document.getElementById('startBtn').value);
+        for(let i=0; i<90; i++) {
+            let d = new Date(start); d.setDate(start.getDate() + i);
+            const cell = document.createElement('div');
+            cell.className = `day-cell ${d.getMonth()%2 ? 'm-even' : ''}`;
+            cell.innerHTML = `${d.getMonth()+1}/${d.getDate()}`;
+            header.appendChild(cell);
+        }
+    }
+
+    let target = null, mode = '', startX, startL, startW;
+    document.addEventListener('mousedown', e => {
+        if (e.target.classList.contains('resizer')) { target = e.target.parentElement; mode = 'res'; }
+        else if (e.target.classList.contains('bar')) { target = e.target; mode = 'mov'; }
+        if (target) { startX = e.clientX; startL = parseInt(target.style.left); startW = target.offsetWidth; }
+    });
+    document.addEventListener('mousemove', e => {
+        if (!target) return;
+        const dx = e.clientX - startX;
+        if (mode === 'mov') target.style.left = Math.max(0, startL + dx) + 'px';
+        else target.style.width = Math.max(20, startW + dx) + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+        if (target) {
+            const snap = 40;
+            target.style.left = Math.round(parseInt(target.style.left)/snap)*snap + 'px';
+            target.style.width = Math.round(target.offsetWidth/snap)*snap + 'px';
+        }
+        target = null;
+    });
+
+    document.getElementById('startBtn').onchange = renderTime;
+    renderTime();
+    createRow();
+</script>
+</body>
+</html>
